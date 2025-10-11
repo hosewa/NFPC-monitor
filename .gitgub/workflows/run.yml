@@ -2,9 +2,9 @@ name: Run NFPC monitor daily 9am KST
 
 on:
   schedule:
-    # GitHub Actions는 UTC 기준 (KST 09:00 = UTC 00:00)
+    # GitHub Actions는 UTC 기준. KST 09:00 = UTC 00:00
     - cron: "0 0 * * *"
-  workflow_dispatch: {}  # 수동 실행 버튼도 생성
+  workflow_dispatch: {}
 
 jobs:
   run:
@@ -18,20 +18,24 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ✅ 크롬 설치 단계 (중요)
       - name: Install Google Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v1
-        # (기본 최신 안정판 설치, 필요 시 with: chrome-version: 'latest' 지정 가능)
+        # 필요시 특정 버전:
+        # with:
+        #   chrome-version: 'stable'  # or 'beta' / 'latest'
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # ✅ CHROME_PATH 전달 (다음 step의 env에 주입)
       - name: Run NFPC script
         env:
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
