@@ -2,9 +2,8 @@ name: Run NFPC monitor daily 9am KST
 
 on:
   schedule:
-    # GitHub Actions는 UTC 기준. KST 09:00 = UTC 00:00
-    - cron: "0 0 * * *"
-  workflow_dispatch: {}  # 수동 실행 버튼
+    - cron: "0 0 * * *"   # UTC 00:00 = KST 09:00
+  workflow_dispatch: {}
 
 jobs:
   run:
