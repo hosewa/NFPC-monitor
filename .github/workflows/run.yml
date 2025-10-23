@@ -2,38 +2,85 @@ name: Run NFPC monitor daily 9am KST
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # UTC 00:00 = KST 09:00
+    # GitHub Actions cron uses UTC. 00:00 UTC = 09:00 KST (no DST in KR)
+    - cron: "0 0 * * *"
   workflow_dispatch: {}
+
+# 수동 실행과 예약 실행이 겹칠 때 중복 실행 방지
+concurrency:
+  group: nfpc-daily
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # NFPC.txt를 커밋/푸시하려면 contents: write 필요
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 커밋 로그/차이 확인 및 푸시 안정성
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"   # requirements.txt 기반 캐시
 
       - name: Install Google Chrome
         id: setup-chrome
         uses: browser-actions/setup-chrome@v1
 
+      - name: Verify Chrome
+        run: |
+          google-chrome --version || chrome --version || true
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install selenium webdriver-manager
+          fi
 
       - name: Run NFPC script
         env:
+          # 메일/SMTP 설정 (Secrets에 등록해 두세요)
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+          # 크롬 경로를 스크립트가 인식하도록 전달
           CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
           python NFPC.py
+
+      - name: Commit NFPC.txt if changed
+        run: |
+          if git status --porcelain | grep -q "NFPC.txt"; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add NFPC.txt
+            git commit -m "chore(nfpc): update NFPC.txt on $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git push
+          else
+            echo "No changes to NFPC.txt"
+          fi
+
+      # 실패 원인 파악을 위해 디버깅 산출물 업로드 (성공/실패와 무관하게 시도)
+      - name: Upload debug artifacts (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfpc-debug-${{ github.run_id }}
+          path: |
+            debug_*.html
