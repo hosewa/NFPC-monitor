@@ -6,6 +6,7 @@ import html
 import time
 import os
 import re
+from typing import Dict, List, Tuple, Optional
 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -19,9 +20,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 
-# ========= 메일 설정: GitHub Secrets/환경변수에서 읽기 =========
+# ========= 메일/SMTP 설정: GitHub Secrets/환경변수에서 읽기 =========
 MAIL_FROM = os.environ.get("MAIL_FROM", "tmddhks11@gmail.com")
-MAIL_TO   = os.environ.get("MAIL_TO", "hosewa@lgensol.com")
+MAIL_TO   = os.environ.get("MAIL_TO",   "hosewa@lgensol.com")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 
 # ✅ SMTP_PORT 방어 로직 (비어있거나 숫자 아니면 자동 587)
@@ -36,7 +37,7 @@ SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
 
 def get_law_text(url: str) -> str:
-    """법령 본문 텍스트 수집 (iframe 전환 + 안정 대기 + 실패시 스냅샷 저장)"""
+    """법령 본문 텍스트 수집 (iframe 전환 + 안정 대기 + 실패 시 스냅샷 저장)"""
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -108,11 +109,26 @@ def get_law_text(url: str) -> str:
         driver.quit()
 
 
-def split_by_article(text: str) -> dict:
+def fetch_with_retry(url: str, tries: int = 2, sleep_sec: float = 4.0) -> str:
+    """네트워크/렌더링 글리치 대비 간단 재시도 래퍼"""
+    last_e: Optional[Exception] = None
+    for i in range(tries):
+        try:
+            return get_law_text(url)
+        except Exception as e:
+            last_e = e
+            print(f"[RETRY] {url} ({i+1}/{tries}) failed: {e}")
+            if i < tries - 1:
+                time.sleep(sleep_sec)
+    assert last_e is not None
+    raise last_e
+
+
+def split_by_article(text: str) -> Dict[str, str]:
     """'제n조' 기준으로 조문 분리"""
-    article_map = {}
-    current_title = None
-    current_body = []
+    article_map: Dict[str, str] = {}
+    current_title: Optional[str] = None
+    current_body: List[str] = []
 
     for line in text.splitlines():
         if re.match(r"^제\d+조", line):
@@ -128,7 +144,7 @@ def split_by_article(text: str) -> dict:
     return article_map
 
 
-def highlight_diff(a: str, b: str) -> tuple[str, str]:
+def highlight_diff(a: str, b: str) -> Tuple[str, str]:
     """두 텍스트 차이를 빨간색 <b>로 하이라이트"""
     matcher = difflib.SequenceMatcher(None, a, b)
     result_a, result_b = "", ""
@@ -147,12 +163,12 @@ def highlight_diff(a: str, b: str) -> tuple[str, str]:
     return result_a or "[없음]", result_b or "[없음]"
 
 
-def get_changed_articles(new_text: str, old_text: str) -> list[dict]:
+def get_changed_articles(new_text: str, old_text: str) -> List[Dict[str, str]]:
     """조문 단위로 변경된 항목 목록"""
     new_map = split_by_article(new_text)
     old_map = split_by_article(old_text)
 
-    changed = []
+    changed: List[Dict[str, str]] = []
     for title, new_body in new_map.items():
         old_body = old_map.get(title, "")
         if new_body != old_body:
@@ -161,7 +177,8 @@ def get_changed_articles(new_text: str, old_text: str) -> list[dict]:
     return changed
 
 
-def send_email_notification(change_dict: dict, errors: dict | None = None) -> None:
+def send_email_notification(change_dict: Dict[str, List[Dict[str, str]]],
+                            errors: Optional[Dict[str, str]] = None) -> None:
     """변경 사항/오류 요약을 HTML 메일로 송부"""
     sender_email = MAIL_FROM
     sender_password = SMTP_PASS
@@ -173,7 +190,7 @@ def send_email_notification(change_dict: dict, errors: dict | None = None) -> No
         "NFPC109": "옥외소화전 기준 (NFPC109)",
     }
 
-    changed_titles = []
+    changed_titles: List[str] = []
     html_body = ""
 
     # 오류가 있으면 상단에 상태 표기
@@ -234,7 +251,7 @@ def send_email_notification(change_dict: dict, errors: dict | None = None) -> No
         print("❌ 이메일 전송 실패:", e)
 
 
-def save_combined_text(text_dict: dict) -> None:
+def save_combined_text(text_dict: Dict[str, str]) -> None:
     """수집한 원문을 합쳐 파일로 저장 (다음 비교용)"""
     combined = ""
     for key, text in text_dict.items():
@@ -243,7 +260,7 @@ def save_combined_text(text_dict: dict) -> None:
         f.write(combined.strip())
 
 
-def load_combined_text() -> dict:
+def load_combined_text() -> Dict[str, str]:
     """이전 수집본 로드(없으면 빈 값)"""
     if not os.path.exists("NFPC.txt"):
         return {"NFPC102": "", "NFPC103": "", "NFPC109": ""}
@@ -256,7 +273,7 @@ def load_combined_text() -> dict:
             content = f.read()
 
     result = {"NFPC102": "", "NFPC103": "", "NFPC109": ""}
-    current_key = None
+    current_key: Optional[str] = None
     for line in content.splitlines():
         if "### NFPC102 ###" in line:
             current_key = "NFPC102"
@@ -273,7 +290,7 @@ def load_combined_text() -> dict:
     return result
 
 
-def main():
+def main() -> None:
     print("🕒 NFPC 기준 점검 시작")
 
     urls = {
@@ -282,21 +299,22 @@ def main():
         "NFPC109": "https://www.law.go.kr/행정규칙/옥외소화전설비의화재안전성능기준(NFPC109)",
     }
 
-    new_texts = {}
-    errors = {}
+    new_texts: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
 
-    # 수집 단계 (오류가 나도 전체 중단하지 않고 이어감)
+    # ✅ 수집 단계 (오류가 나도 전체 중단하지 않고 이어감, + 재시도 적용)
     for key, url in urls.items():
         try:
-            new_texts[key] = get_law_text(url)
+            new_texts[key] = fetch_with_retry(url, tries=2, sleep_sec=4)
         except Exception as e:
             errors[key] = f"{type(e).__name__}: {e}"
-            new_texts[key] = ""
+            new_texts[key] = ""  # 임시로 비워두되, 저장 정책에서 보호됨
 
+    # 이전본 로드
     old_texts = load_combined_text()
 
-    # 변경 비교
-    change_dict = {}
+    # ✅ 변경 비교 (개별 항목 실패해도 이어감)
+    change_dict: Dict[str, List[Dict[str, str]]] = {}
     for key in urls.keys():
         try:
             change_dict[key] = get_changed_articles(new_texts[key], old_texts.get(key, ""))
@@ -304,9 +322,21 @@ def main():
             errors[key] = f"{type(e).__name__}: {e}"
             change_dict[key] = []
 
-    # 메일 전송 + 스냅샷 저장
+    # 결과 메일 전송
     send_email_notification(change_dict, errors)
+
+    # ✅ 저장 정책: 에러가 하나라도 있으면 저장하지 않음 (기준 파일 보호)
+    if errors:
+        print("⚠️ 에러가 감지되어 NFPC.txt를 덮어쓰지 않습니다. (기존 기준 유지)")
+        return
+
+    # (선택) 실패한 키가 비었으면 old_text로 보충해서 저장하고 싶다면 아래 3줄을 사용
+    # for key, text in new_texts.items():
+    #     if not text.strip():
+    #         new_texts[key] = old_texts.get(key, "")
+
     save_combined_text(new_texts)
+    print("💾 NFPC.txt 저장 완료")
 
 
 if __name__ == "__main__":
