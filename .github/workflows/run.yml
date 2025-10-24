@@ -84,3 +84,5 @@ jobs:
           name: nfpc-debug-${{ github.run_id }}
           path: |
             debug_*.html
+            debug_*.png
+          retention-days: 7
